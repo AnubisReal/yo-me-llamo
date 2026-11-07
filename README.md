@@ -115,3 +115,7 @@ Copia `.env.example` a `.env`, configura el token y usa `IMAGE=yo-me-llamo:local
 El stack usa primero la conexión directa. Si falla una consulta o descarga, prueba `YML_PROXY_FALLBACK`, configurado como `http://8.242.147.166:3128`. Se verificaron salida CO, TLS y ocho segundos del HLS con FFmpeg el 7 de noviembre de 2026. Fuente pública: https://proxyspace.pro/country/co/. Un proxy gratuito puede dejar de funcionar; se puede sustituir desde las variables del stack. Para desactivar el respaldo define `YML_PROXY_FALLBACK` vacío.
 
 Si defines `YML_PROXY`, se fuerza esa salida para consultas y vídeos y no se cambia de IP a mitad de descarga. El respaldo vuelve a resolver el HLS por su propia salida, porque las URLs firmadas pueden estar ligadas a la IP. No se desactiva la validación TLS.
+
+## Redes Docker agotadas
+
+El stack utiliza `network_mode: bridge`, la red integrada de Docker. No crea una red `yomellamo_default` ni consume otro rango de subredes. Si Portainer muestra `all predefined address pools have been fully subnetted`, actualiza el YAML con la versión actual del repositorio y vuelve a desplegar. Se mantiene la publicación del puerto 8787. No hace falta borrar redes ni reiniciar Docker.

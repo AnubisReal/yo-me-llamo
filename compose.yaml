@@ -3,6 +3,7 @@ services:
     image: ${IMAGE:-ghcr.io/anubisreal/yo-me-llamo:latest}
     container_name: yo-me-llamo
     restart: unless-stopped
+    network_mode: bridge
     init: true
     user: "${PUID:-1000}:${PGID:-1000}"
     ports:
