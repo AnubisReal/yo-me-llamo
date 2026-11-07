@@ -18,6 +18,7 @@ import shutil
 import sqlite3
 import subprocess
 import threading
+import tempfile
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urljoin, urlsplit, parse_qs
@@ -115,6 +116,19 @@ def publish_file(source, destination):
     finally:
         staging.unlink(missing_ok=True)
 
+class DownloadError(RuntimeError):
+    def __init__(self,message,retryable=True):
+        super().__init__(message);self.retryable=retryable
+
+def download_error(error):
+    if isinstance(error,PermissionError):return 'Sin permisos de escritura en la carpeta de destino o temporales.'
+    if isinstance(error,OSError) and error.errno==errno.ENOSPC:return 'No queda espacio libre en el disco de temporales o de destino.'
+    text=re.sub(r'https?://[^\s\x27\x22]+','[URL]',str(error))
+    return text[:240] or type(error).__name__
+
+def retryable(error):
+    return not isinstance(error,(PermissionError,FileNotFoundError,ValueError)) and not (isinstance(error,OSError) and error.errno==errno.ENOSPC) and getattr(error,'retryable',True)
+
 class Monitor:
     def __init__(self, config):
         self.config = dict(config)
@@ -136,6 +150,9 @@ class Monitor:
         self.opener = build_opener(ProxyHandler({'http':self.proxy, 'https':self.proxy} if self.proxy else {}))
         self.fallback_opener = build_opener(ProxyHandler({'http':self.fallback_proxy,'https':self.fallback_proxy})) if self.fallback_proxy else None
         self.scan_lock = threading.Lock(); self.pending = set(); self.pending_lock = threading.Lock()
+        self.library_lock=threading.RLock()
+        self.slots=threading.Condition();self.active=set();self.worker_threads=[];self.stopping=threading.Event()
+        self.process_lock=threading.Lock();self.processes=set()
         self.work = queue.Queue(); self.last_error = None; self.last_scan = None
         with self.connect() as db:
             db.execute('''CREATE TABLE IF NOT EXISTS episodes (
@@ -147,6 +164,7 @@ class Monitor:
                 if name not in columns: db.execute(f'ALTER TABLE episodes ADD COLUMN {name} {definition}')
             db.execute('CREATE TABLE IF NOT EXISTS state (key TEXT PRIMARY KEY, value TEXT)')
             state = dict(db.execute('SELECT key,value FROM state').fetchall())
+            self.config['download_workers']=int(state.get('download_workers',self.config.get('download_workers',3)))
             self.last_scan = state.get('last_scan')
             self.last_full_scan = float(state.get('last_full_scan', 0))
             db.execute('CREATE TABLE IF NOT EXISTS local_files (number INTEGER,season TEXT,path TEXT,PRIMARY KEY(number,season))')
@@ -157,7 +175,7 @@ class Monitor:
                     self.dest=candidate;self.config.update(saved)
                     self.settings_configured=True;self.start_after=int(saved.get('start_after',0))
                 else:self.library_error='La carpeta guardada queda fuera del volumen disponible. Revísala en Ajustes.'
-            db.execute("UPDATE episodes SET status='available', error='La tarea se interrumpió; puedes reintentar.' WHERE status IN ('queued','downloading','moving')")
+            db.execute("UPDATE episodes SET status='queued',error=NULL WHERE status IN ('queued','downloading','moving')")
         if self.settings_configured:self.sync_library()
     @contextmanager
     def connect(self):
@@ -173,8 +191,14 @@ class Monitor:
                     data=response.read(limit+1)
                     if len(data)>limit:raise ValueError('Respuesta demasiado grande.')
                     return data.decode('utf-8',errors='replace'),response.url
-            except Exception:
-                if index==len(routes)-1:raise
+            except Exception as error:
+                if index==len(routes)-1:
+                    if getattr(error,'code',None)==403:
+                        try:details=json.loads(error.read(4096))
+                        except (ValueError,OSError,AttributeError):details={}
+                        if isinstance(details,dict) and details.get('data')=='GEO':
+                            raise DownloadError('Restricción geográfica: este capítulo necesita una salida en Colombia.') from None
+                    raise
     def scan(self):
         if not self.scan_lock.acquire(blocking=False): return
         errors = []; pending = []; scheduled = set(); fetched = set()
@@ -260,7 +284,7 @@ class Monitor:
         if not self.config.get('auto_download',False) or not self.settings_configured or self.library_error: return
         with self.connect() as db:
             row = db.execute('SELECT * FROM episodes WHERE url=?',(url,)).fetchone()
-        floor=max(self.start_after,self.library['last_episode']) if self.library['count'] or self.start_after else self.config.get('min_episode',75)-1
+        floor=max(self.start_after,self.config.get('min_episode',75)-1)
         self.resume_after=floor
         if not row or row['number']<=floor: return
         if row['status']=='available' or (row['status']=='error' and row['attempts']<self.config.get('max_attempts',3) and row['next_retry']<=time.time()):
@@ -273,6 +297,8 @@ class Monitor:
         result['output_dir']=str(path)
         return result
     def sync_library(self):
+        with self.library_lock:return self._sync_library()
+    def _sync_library(self):
         try:
             result=self.inspect_destination(str(self.dest))
             self.library_error=None
@@ -303,7 +329,7 @@ class Monitor:
                 'configured':self.settings_configured,'auto_download':self.config.get('auto_download',True),
                 'check_interval_minutes':self.config['check_interval_minutes'],
                 'min_episode':self.config.get('min_episode',75),'library':self.library,
-                'resume_after':self.resume_after,'error':self.library_error}
+                'download_workers':self.config.get('download_workers',3),'resume_after':self.resume_after,'error':self.library_error}
     def save_settings(self, values):
         if not self.scan_lock.acquire(blocking=False):raise ValueError('Espera a que termine la revisión de capítulos.')
         try:
@@ -327,6 +353,44 @@ class Monitor:
                 self.sync_library()
                 return self.settings_snapshot()
         finally:self.scan_lock.release()
+    def set_concurrency(self, count):
+        count=int(count)
+        if not 1<=count<=8:raise ValueError('Elige entre 1 y 8 descargas simultáneas.')
+        with self.connect() as db:db.execute("INSERT OR REPLACE INTO state VALUES ('download_workers',?)",(str(count),))
+        with self.slots:
+            self.config['download_workers']=count;self.slots.notify_all()
+        return {'download_workers':count}
+    def start_workers(self, slots=8):
+        if self.worker_threads:return
+        self.stopping.clear()
+        for index in range(slots):
+            thread=threading.Thread(target=self.worker,name=f'download-{index}',daemon=True)
+            self.worker_threads.append(thread);thread.start()
+        with self.connect() as db:rows=db.execute("SELECT url FROM episodes WHERE status='queued' ORDER BY number").fetchall()
+        if self.settings_configured:
+            for row in rows:self.enqueue(row['url'],automatic=True)
+        thread=threading.Thread(target=self.retry_loop,name='download-retries',daemon=True)
+        self.worker_threads.append(thread);thread.start()
+    def stop_workers(self):
+        self.stopping.set()
+        with self.slots:self.slots.notify_all()
+        with self.process_lock:
+            for process in self.processes:
+                if process.poll() is None:process.terminate()
+    def retry_due(self):
+        if not self.settings_configured:return
+        with self.connect() as db:
+            rows=db.execute("SELECT url FROM episodes WHERE status='error' AND attempts>0 AND attempts<? AND next_retry>0 AND next_retry<=? ORDER BY number",(self.config.get('max_attempts',3),time.time())).fetchall()
+        for row in rows:self.enqueue(row['url'],automatic=True)
+        with self.connect() as db:
+            orphaned=db.execute("SELECT url FROM episodes WHERE status IN ('queued','downloading','moving') ORDER BY number").fetchall()
+        for row in orphaned:
+            with self.pending_lock:owned=row['url'] in self.pending
+            if not owned:self.enqueue(row['url'],automatic=True)
+    def retry_loop(self):
+        while not self.stopping.wait(2):
+            try:self.retry_due()
+            except Exception as error:print('Reintento pendiente: '+download_error(error),flush=True)
     def enqueue(self, url, automatic=False):
         if not self.settings_configured:raise ValueError('Selecciona y guarda la carpeta de destino en Ajustes.')
         with self.pending_lock:
@@ -351,71 +415,116 @@ class Monitor:
         if not self.proxy and self.fallback_proxy:routes.append(self.fallback_proxy)
         for index, proxy in enumerate(routes):
             try:return self._download(url,sample_seconds,proxy)
-            except Exception:
-                if index==len(routes)-1:raise
+            except Exception as error:
+                if index==len(routes)-1 or not retryable(error):raise
                 print('Conexión directa fallida; probando el proxy de respaldo.',flush=True)
     def _download(self, url, sample_seconds=None, proxy=''):
         if not self.settings_configured:raise ValueError('Configura la carpeta de destino en Ajustes.')
         checked_directory(self.dest,self.library_root)
         with self.connect() as db: row = dict(db.execute('SELECT * FROM episodes WHERE url=?',(url,)).fetchone())
-        binary = ffmpeg_path()
-        route=build_opener(ProxyHandler({'http':proxy,'https':proxy} if proxy else {}))
-        master, actual = self.fetch(row['hls'],opener=route); choices = variants(master,actual)
-        choices = [v for v in choices if 0 < v['height'] <= self.config['max_height']]
-        if not choices: raise RuntimeError('No hay una resolución compatible en el manifiesto.')
-        selected = max(choices, key=lambda v:v['height'])
-        media, _ = self.fetch(selected['url'],opener=route)
-        if not media.lstrip().startswith('#EXTM3U') or '#EXT-X-ENDLIST' not in media:
-            raise RuntimeError('El vídeo no es un capítulo HLS completo.')
-        if re.search(r'#EXT-X-KEY:(?![^\n]*METHOD=NONE)', media):
-            raise RuntimeError('El vídeo está cifrado; esta aplicación no procesa contenido protegido.')
-        season_folder = f"Temporada {row['season']}"
-        directory = self.dest if self.dest.name.casefold()==season_folder.casefold() else self.dest / season_folder
+        season_folder=f"Temporada {row['season']}"
+        directory=self.dest if self.dest.name.casefold()==season_folder.casefold() else self.dest/season_folder
         directory.mkdir(parents=True,exist_ok=True)
-        name = f"Yo me llamo - {row['season']} - E{row['number']:03d}" + (' - muestra' if sample_seconds else '')
-        final = directory / (name+'.mp4'); partial = self.temp / (name+'.partial.mp4')
+        name=f"Yo me llamo - {row['season']} - E{row['number']:03d}"+(' - muestra' if sample_seconds else '')
+        final=directory/(name+'.mp4');partial=self.temp/(name+'.partial.mp4')
+        ready=self.temp/(name+'.ready')
         if final.exists():
-            if not sample_seconds: self.update(url,status='downloaded',progress=100,path=str(final),height=selected['height'],error=None,attempts=0,next_retry=0)
+            if not sample_seconds:self.update(url,status='downloaded',progress=100,path=str(final),error=None,attempts=0,next_retry=0)
             return final
+        if partial.exists() and ready.exists() and ready.read_text()==str(partial.stat().st_size):
+            self.update(url,status='moving',progress=99,error=None)
+            publish_file(partial,final);ready.unlink(missing_ok=True)
+            self.update(url,status='downloaded',progress=100,path=str(final),error=None,attempts=0,next_retry=0)
+            self.sync_library();return final
+        ready.unlink(missing_ok=True)
+        binary=ffmpeg_path()
+        route=build_opener(ProxyHandler({'http':proxy,'https':proxy} if proxy else {}))
+        master,actual=self.fetch(row['hls'],opener=route)
+        choices=[v for v in variants(master,actual) if 0<v['height']<=self.config['max_height']]
+        if not choices:raise DownloadError('No hay una resolución compatible en el manifiesto.',False)
+        selected=max(choices,key=lambda v:v['height'])
+        media,_=self.fetch(selected['url'],opener=route)
+        if not media.lstrip().startswith('#EXTM3U') or '#EXT-X-ENDLIST' not in media:
+            raise DownloadError('El servidor no devolvió un capítulo HLS completo.')
+        if re.search(r'#EXT-X-KEY:(?![^\n]*METHOD=NONE)',media):
+            raise DownloadError('El vídeo está cifrado; no se procesa contenido protegido.',False)
         cmd = [binary,'-hide_banner','-loglevel','error','-nostdin','-y']
         if proxy: cmd += ['-http_proxy',proxy]
-        cmd += ['-user_agent',UA,'-referer',LIST_URL,'-rw_timeout','30000000','-protocol_whitelist','http,https,tcp,tls,crypto','-i',selected['url']]
+        cmd += ['-user_agent',UA,'-referer',LIST_URL,'-rw_timeout','30000000','-protocol_whitelist','http,https,httpproxy,tcp,tls,crypto','-i',selected['url']]
         if sample_seconds: cmd += ['-t',str(sample_seconds)]
         cmd += ['-map','0:v:0','-map','0:a:0?','-c','copy','-movflags','+faststart','-progress','pipe:1','-nostats',str(partial)]
         self.update(url,status='downloading',error=None,height=selected['height'])
-        completed_seconds = 0
-        try:
-            # stderr puede contener URLs firmadas: no se almacena ni se muestra en la interfaz.
-            with subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True) as proc:
-                for line in proc.stdout:
-                    if line.startswith('out_time_us='):
-                        try: completed_seconds = max(completed_seconds,int(line.split('=',1)[1])/1_000_000)
-                        except ValueError: continue
-                        total = sample_seconds or row['duration']
-                        self.update(url,progress=min(99,round(completed_seconds/max(total,1)*100,1)))
-                code = proc.wait()
-            expected = sample_seconds or row['duration']
-            if code or not partial.exists() or partial.stat().st_size < 10000 or (expected and completed_seconds < max(0,expected-2)):
-                raise RuntimeError('Descarga incompleta. Revisa la conexión y vuelve a intentar.')
-            self.update(url,status='moving',progress=99)
-            publish_file(partial,final)
-            print(f"Capítulo {row['number']}: archivo completo publicado.",flush=True)
-            if not sample_seconds:
-                self.update(url,status='downloaded',progress=100,path=str(final),error=None,attempts=0,next_retry=0)
-                self.sync_library()
-            else: self.update(url,status='available',progress=0)
-            return final
-        except Exception:
-            self.update(url,status='error',next_retry=time.time()+self.config.get('retry_minutes',15)*60,error='Descarga fallida. Se volverá a intentar automáticamente si quedan intentos.')
-            raise
+        completed_seconds=0
+        stalled=threading.Event();done=threading.Event();activity=[time.monotonic()]
+        with tempfile.TemporaryFile() as errors:
+            with subprocess.Popen(cmd,stdout=subprocess.PIPE,stderr=errors,text=True) as process:
+                with self.process_lock:self.processes.add(process)
+                def watchdog():
+                    while not done.wait(5):
+                        if self.stopping.is_set() or time.monotonic()-activity[0]>self.config.get('stall_seconds',90):
+                            stalled.set();process.terminate()
+                            try:process.wait(timeout=5)
+                            except subprocess.TimeoutExpired:process.kill()
+                            return
+                threading.Thread(target=watchdog,daemon=True).start()
+                try:
+                    for line in process.stdout:
+                        if line.startswith('out_time_us='):
+                            try:seconds=int(line.split('=',1)[1])/1_000_000
+                            except ValueError:continue
+                            if seconds>completed_seconds:activity[0]=time.monotonic()
+                            completed_seconds=max(completed_seconds,seconds)
+                            total=sample_seconds or row['duration']
+                            self.update(url,progress=min(99,round(completed_seconds/max(total,1)*100,1)))
+                    code=process.wait()
+                finally:
+                    done.set()
+                    if process.poll() is None:
+                        process.terminate()
+                        try:process.wait(timeout=5)
+                        except subprocess.TimeoutExpired:process.kill();process.wait()
+                    with self.process_lock:self.processes.discard(process)
+            expected=sample_seconds or row['duration']
+            if stalled.is_set():raise DownloadError('La descarga dejó de avanzar; se reiniciará con un HLS nuevo.')
+            if code or not partial.exists() or partial.stat().st_size<10000 or (expected and completed_seconds<max(0,expected-2)):
+                errors.seek(0,2);size=errors.tell();errors.seek(max(0,size-8192))
+                detail=errors.read().decode('utf-8',errors='replace')
+                if 'Permission denied' in detail:raise PermissionError('Sin permisos de escritura en temporales.')
+                if 'No space left' in detail:raise OSError(errno.ENOSPC,'Sin espacio libre.')
+                http=re.search(r'(?:HTTP error |Server returned )(\d{3})',detail)
+                if http:raise DownloadError('El servidor de vídeo rechazó la conexión (HTTP '+http[1]+').')
+                lines=[line for line in detail.splitlines() if line.strip()]
+                raise DownloadError('Descarga incompleta. '+download_error(RuntimeError(lines[-1] if lines else f'FFmpeg terminó con código {code}.')))
+        if not sample_seconds:ready.write_text(str(partial.stat().st_size))
+        self.update(url,status='moving',progress=99)
+        publish_file(partial,final);ready.unlink(missing_ok=True)
+        print(f"Capítulo {row['number']}: archivo completo publicado.",flush=True)
+        if not sample_seconds:
+            self.update(url,status='downloaded',progress=100,path=str(final),error=None,attempts=0,next_retry=0)
+            self.sync_library()
+        else:self.update(url,status='available',progress=0)
+        return final
     def worker(self):
-        while True:
-            url = self.work.get()
-            try: self.download(url)
-            except Exception:
-                self.update(url,status='error',next_retry=time.time()+self.config.get('retry_minutes',15)*60,error='Descarga fallida. Se volverá a intentar automáticamente si quedan intentos.')
+        while not self.stopping.is_set():
+            try:url=self.work.get(timeout=.2)
+            except queue.Empty:continue
+            try:
+                with self.slots:
+                    while len(self.active)>=self.config.get('download_workers',3) and not self.stopping.is_set():self.slots.wait(.5)
+                    if self.stopping.is_set():continue
+                    self.active.add(url)
+                self.update(url,status='downloading',error=None)
+                try:self.download(url)
+                except Exception as error:
+                    message=download_error(error)
+                    due=time.time()+self.config.get('retry_seconds',20) if retryable(error) else 0
+                    self.update(url,status='error',next_retry=due,error=message)
+                    print('Descarga fallida: '+message,flush=True)
+            except Exception as error:
+                print('Error al procesar la cola: '+download_error(error),flush=True)
             finally:
-                with self.pending_lock: self.pending.discard(url)
+                with self.slots:self.active.discard(url);self.slots.notify_all()
+                with self.pending_lock:self.pending.discard(url)
                 self.work.task_done()
     def scheduler(self):
         while True:
@@ -429,7 +538,7 @@ class Monitor:
             rows = [dict(r) for r in db.execute('SELECT url,title,number,season,published,duration,status,progress,path,error,height FROM episodes ORDER BY published DESC')]
         return dict(episodes=rows,scanning=self.scan_lock.locked(),last_scan=self.last_scan,error=self.last_error,
                     temp_dir=str(self.temp),output_dir=str(self.dest),proxy_enabled=bool(self.proxy or self.fallback_proxy),auto_download=self.config['auto_download'],
-                    settings=self.settings_snapshot(),library=self.library,library_error=self.library_error,season=self.config['season'],max_height=self.config['max_height'],check_interval_minutes=self.config['check_interval_minutes'])
+                    download_workers=self.config.get('download_workers',3),active_downloads=len(self.active),settings=self.settings_snapshot(),library=self.library,library_error=self.library_error,season=self.config['season'],max_height=self.config['max_height'],check_interval_minutes=self.config['check_interval_minutes'])
 
 def serve(monitor,host,port):
     token = os.environ.get('YML_TOKEN','')
@@ -471,6 +580,7 @@ def serve(monitor,host,port):
                 body=json.loads(self.rfile.read(length) or b'{}')
                 if self.path=='/api/scan': threading.Thread(target=monitor.scan,daemon=True).start()
                 elif self.path=='/api/download': monitor.enqueue(body['url'])
+                elif self.path=='/api/concurrency':return self.reply(200,monitor.set_concurrency(body['download_workers']))
                 elif self.path=='/api/settings/inspect':return self.reply(200,monitor.inspect_destination(body['output_dir']))
                 elif self.path=='/api/settings':
                     result=monitor.save_settings(body)
@@ -479,19 +589,19 @@ def serve(monitor,host,port):
                 else: return self.reply(404,{'error':'No encontrado.'})
                 self.reply(202,{'ok':True})
             except (ValueError,KeyError,TypeError,OSError) as error:self.reply(400,{'error':str(error) if isinstance(error,ValueError) else 'Solicitud no válida o carpeta no accesible.'})
-    threading.Thread(target=monitor.worker,daemon=True).start()
+    monitor.start_workers()
     threading.Thread(target=monitor.scheduler,daemon=True).start()
     print(f'Interfaz: http://{host}:{port}',flush=True)
     server=ThreadingHTTPServer((host,port),Handler)
     try: server.serve_forever()
     except KeyboardInterrupt: pass
-    finally: server.server_close()
+    finally:monitor.stop_workers();server.server_close()
 
 def apply_environment(config):
     fields = {'YML_HOST':('host',str),'YML_PORT':('port',int),
               'YML_DATA_DIR':('data_dir',str),'YML_TEMP_DIR':('temp_dir',str),
               'YML_LIBRARY_ROOT':('library_root',str),'YML_OUTPUT_DIR':('output_dir',str),'YML_SEASON':('season',int),
-              'YML_INTERVAL_MINUTES':('check_interval_minutes',int),
+              'YML_DOWNLOAD_WORKERS':('download_workers',int),'YML_INTERVAL_MINUTES':('check_interval_minutes',int),
               'YML_MIN_EPISODE':('min_episode',int),'YML_MAX_HEIGHT':('max_height',int)}
     for variable, (key, convert) in fields.items():
         if variable in os.environ: config[key] = convert(os.environ[variable])
@@ -508,6 +618,7 @@ def main():
     apply_environment(config)
     for key in ['max_pages','max_height','check_interval_minutes']:
         if int(config[key])<=0: raise ValueError(f'{key} debe ser positivo.')
+    if not 1<=int(config.get('download_workers',3))<=8:raise ValueError('download_workers debe estar entre 1 y 8.')
     data_dir=Path(config['data_dir']).expanduser().resolve(); data_dir.mkdir(parents=True,exist_ok=True)
     instance_lock=(data_dir/'.instance.lock').open('a')
     try: fcntl.flock(instance_lock,fcntl.LOCK_EX | fcntl.LOCK_NB)

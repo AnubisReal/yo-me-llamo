@@ -27,7 +27,7 @@ class ParsingTests(unittest.TestCase):
             self.assertEqual(monitor.work.qsize(),1)
             restarted=app.Monitor(config)
             with restarted.connect() as db:
-                self.assertEqual(db.execute('SELECT status FROM episodes').fetchone()[0],'available')
+                self.assertEqual(db.execute('SELECT status FROM episodes').fetchone()[0],'queued')
     def test_cannot_queue_unknown_url(self):
         with tempfile.TemporaryDirectory() as directory:
             monitor=app.Monitor({'data_dir':directory,'output_dir':directory,'season':2026})

@@ -80,3 +80,8 @@ jobs:
           test "$(stat -c '%u:%g:%a' /extraible2/Series/existing-video.mp4)" = "$original_media_owner"
           test "$(docker inspect --format '{{.Config.User}}' yo-me-llamo)" = "12001:12001"
           echo 'Permisos preparados automáticamente; biblioteca existente sin cambios.'
+          curl -fsS -H "Authorization: Bearer $YML_TOKEN" -H 'Content-Type: application/json' \
+            -d '{"download_workers":4}' http://127.0.0.1:18787/api/concurrency \
+            | python3 -c "import json,sys; assert json.load(sys.stdin)['download_workers']==4"
+          docker compose exec -T yo-me-llamo ffmpeg -protocols 2>/dev/null | grep -w httpproxy
+          echo 'Concurrencia configurable y transporte de proxy verificados.'

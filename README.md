@@ -5,7 +5,7 @@ Monitor y descargador de capítulos con interfaz web. Python, SQLite y FFmpeg, s
 - Revisa novedades cada 15 minutos. En Ajustes eliges la carpeta existente y continúa automáticamente después del último capítulo reconocido.
 - Recorre las listas internas y «CARGAR MÁS». Revisión completa al iniciar por primera vez y cada 24 horas; el resto de revisiones consulta novedades.
 - Descarga a `/instalaciones/yo-me-llamo/tmp` y publica el MP4 completo en `/extraible2/Series/yo me llamo/Temporada 2026`.
-- Una descarga simultánea, historial persistente y hasta tres intentos automáticos. Funciona con discos distintos.
+- Tres descargas simultáneas por defecto (ajustables de 1 a 8 desde la web), historial persistente y hasta tres intentos automáticos. Funciona con discos distintos.
 
 ## 1. Subir a GitHub y generar la imagen
 
@@ -64,7 +64,7 @@ Variables opcionales:
 | `SEASON` | `2026` | Temporada |
 | `YML_PROXY` | vacío | Proxy HTTP/HTTPS opcional; misma salida para consultas y vídeo |
 
-Después de guardar Ajustes descarga los capítulos pendientes posteriores al último existente y al punto de inicio elegido. No rellena huecos anteriores automáticamente; siguen disponibles para descarga manual. Al reiniciar, recupera las tareas interrumpidas. Los errores se reintentan hasta tres veces, con al menos 15 minutos entre intentos; el botón **Reintentar** reinicia el contador.
+Después de guardar Ajustes descarga los capítulos pendientes posteriores al último existente y al punto de inicio elegido. No rellena huecos anteriores automáticamente; siguen disponibles para descarga manual. Al reiniciar, recupera las tareas interrumpidas. Los fallos de red se reintentan hasta tres veces, con unos 20 segundos entre intentos y sin esperar a la revisión del catálogo; el botón **Reintentar** reinicia el contador.
 
 El acceso por token protege las operaciones de la web. Para acceder desde Internet utiliza tu proxy inverso con HTTPS; el stack publica HTTP en el puerto elegido para la red del servidor.
 
@@ -117,3 +117,11 @@ Si defines `YML_PROXY`, se fuerza esa salida para consultas y vídeos y no se ca
 El stack utiliza `network_mode: bridge`, la red integrada de Docker. No crea una red `yomellamo_default` ni consume otro rango de subredes. Si Portainer muestra `all predefined address pools have been fully subnetted`, actualiza el YAML con la versión actual del repositorio y vuelve a desplegar. Se mantiene la publicación del puerto 8787. No hace falta borrar redes ni reiniciar Docker.
 
 Si tenías el error `Permission denied: /data/.instance.lock`, reemplaza el stack por la versión actual y activa **Re-pull image** al actualizarlo. El servicio `preparar-carpetas` debe terminar con código 0; después arranca `yo-me-llamo`.
+
+## Cola de descargas
+
+El selector **Simultáneas** cambia el límite mientras hay descargas activas, sin reiniciar. `DOWNLOAD_WORKERS` define el valor inicial del stack (3); los cambios de la web se guardan. Los trabajos en cola se recuperan al reiniciar. Un capítulo posterior completado no cancela los reintentos de anteriores. Los errores de permisos o espacio se muestran para corregirlos, sin reintentos continuos.
+
+Si FFmpeg deja de avanzar durante 90 segundos, el proceso se termina y la tarea puede reintentarse con un HLS nuevo. Si falla el traslado de un temporal que ya estaba completo, el siguiente intento vuelve a trasladarlo sin descargar el vídeo otra vez. Las URLs firmadas no se incluyen en los mensajes de error.
+
+FFmpeg permite expresamente el transporte `httpproxy`, necesario para descargar segmentos HTTPS mediante el proxy. Se verificó una muestra real del capítulo 73 (bloqueado fuera de Colombia), además de las pruebas de concurrencia y recuperación de errores.

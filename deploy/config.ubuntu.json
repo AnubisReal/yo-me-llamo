@@ -15,5 +15,8 @@
   "retry_minutes": 15,
   "temp_dir": "/instalaciones/yo-me-llamo/tmp",
   "require_setup": true,
-  "library_root": "/extraible2/Series"
+  "library_root": "/extraible2/Series",
+  "download_workers": 3,
+  "retry_seconds": 20,
+  "stall_seconds": 90
 }

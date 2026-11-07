@@ -26,6 +26,7 @@ function render(){
   $('schedule').textContent=!state.settings?.configured?'Configura la carpeta en Ajustes':state.auto_download?`Automático · cada ${state.check_interval_minutes} min`:'Descarga manual';
   $('checked').textContent=state.scanning?'Revisando capítulos…':state.last_scan?'Última revisión: '+new Date(state.last_scan).toLocaleString('es-ES',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'Sin revisiones';
   $('scan').disabled=state.scanning;
+  if(document.activeElement!==$('parallel'))$('parallel').value=String(state.download_workers||3);
   $('settings-save').disabled=!libraryPreview||state.scanning||all.some(e=>active.includes(e.status));
   $('episodes').replaceChildren();
   if(!filtered.length){const row=node('tr');const cell=node('td',state.scanning?'Buscando capítulos…':'No hay capítulos.','empty');cell.colSpan=5;row.append(cell);$('episodes').append(row);}
@@ -105,3 +106,5 @@ $('settings-form').onsubmit=async event=>{
     $('settings-dialog').close();await refresh();
   }catch(error){settingsError(error.message);$('settings-save').disabled=false;}
 };
+
+$('parallel').onchange=async()=>{try{await api('/api/concurrency',{download_workers:Number($('parallel').value)});await refresh();}catch(error){notice(error.message);}};
