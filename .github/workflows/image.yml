@@ -36,6 +36,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Construir y publicar
+        id: build
         uses: docker/build-push-action@v7
         with:
           context: .
@@ -48,3 +49,26 @@ jobs:
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      - name: Verificar contenedor y stack
+        if: github.event_name != 'pull_request'
+        env:
+          SMOKE_IMAGE: ${{ steps.image.outputs.name }}@${{ steps.build.outputs.digest }}
+          YML_TOKEN: ci-smoke-only
+        shell: bash
+        run: |
+          docker compose config --quiet
+          trap 'docker logs yml-smoke; docker rm -f yml-smoke' EXIT
+          docker run -d --name yml-smoke --read-only \
+            --tmpfs /tmp:mode=1777 \
+            --tmpfs /data:uid=1000,gid=1000,mode=0755 \
+            --tmpfs /work:uid=1000,gid=1000,mode=0755 \
+            --tmpfs /extraible2/Series:uid=1000,gid=1000,mode=0755 \
+            -e YML_TOKEN -p 127.0.0.1:18787:8787 "$SMOKE_IMAGE"
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:18787/health >/dev/null; then break; fi
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:18787/health
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18787/api/status)" = 401
+          curl -fsS -H "Authorization: Bearer $YML_TOKEN" http://127.0.0.1:18787/api/status \
+            | python3 -c "import json,sys; data=json.load(sys.stdin); assert data['settings']['configured'] is False; print('Contenedor OK: autenticación y configuración inicial verificadas.')"

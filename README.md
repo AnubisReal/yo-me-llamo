@@ -35,11 +35,10 @@ La instalación queda en la imagen Docker. Solo la base de datos y los temporale
 
 ## 3. Crear el stack en Portainer
 
-En un entorno **Docker Standalone**, abre **Stacks → Add stack → Web editor**, pega [compose.yaml](compose.yaml) y añade dos variables:
+En un entorno **Docker Standalone**, abre **Stacks → Add stack → Web editor**, pega [compose.yaml](compose.yaml) y configura el token de acceso. La imagen ya está definida en el stack:
 
 | Variable | Valor |
 | --- | --- |
-| `IMAGE` | `ghcr.io/anubisreal/yo-me-llamo:latest` (usuario en minúsculas) |
 | `YML_TOKEN` | Un token que elijas. Puedes generar uno con `openssl rand -hex 24`. |
 
 Pulsa **Deploy the stack**. Abre `http://IP-DE-TU-SERVIDOR:8787` e introduce ese token.
@@ -60,6 +59,8 @@ Variables opcionales:
 
 | Variable | Predeterminado | Uso |
 | --- | --- | --- |
+| `IMAGE` | `ghcr.io/anubisreal/yo-me-llamo:latest` | Imagen Docker publicada |
+| `YML_PROXY_FALLBACK` | `http://8.242.147.166:3128` | Respaldo colombiano si falla la conexión directa; vacío lo desactiva |
 | `PUID`, `PGID` | `1000`, `1000` | Permisos de las carpetas |
 | `PORT` | `8787` | Puerto web del servidor |
 | `CHECK_MINUTES` | `15` | Frecuencia de búsqueda |
