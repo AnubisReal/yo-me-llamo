@@ -13,7 +13,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: python3 -m unittest discover -s tests
-      - run: python3 -m py_compile app.py library.py
+      - run: python3 -m py_compile app.py library.py prepare_storage.py
       - run: node --check static/app.js
   image:
     needs: test
@@ -56,14 +56,18 @@ jobs:
           YML_TOKEN: ci-smoke-only
         shell: bash
         run: |
+          export IMAGE="$SMOKE_IMAGE" PUID=12001 PGID=12001 PORT=18787
           docker compose config --quiet
-          trap 'docker logs yml-smoke; docker rm -f yml-smoke' EXIT
-          docker run -d --name yml-smoke --read-only \
-            --tmpfs /tmp:mode=1777 \
-            --tmpfs /data:uid=1000,gid=1000,mode=0755 \
-            --tmpfs /work:uid=1000,gid=1000,mode=0755 \
-            --tmpfs /extraible2/Series:uid=1000,gid=1000,mode=0755 \
-            -e YML_TOKEN -p 127.0.0.1:18787:8787 "$SMOKE_IMAGE"
+          sudo mkdir -p /instalaciones/yo-me-llamo/data /instalaciones/yo-me-llamo/tmp /extraible2/Series
+          sudo touch /instalaciones/yo-me-llamo/data/.instance.lock
+          sudo chmod 700 /instalaciones/yo-me-llamo/data /instalaciones/yo-me-llamo/tmp
+          sudo chmod 600 /instalaciones/yo-me-llamo/data/.instance.lock
+          sudo chown 12001:12001 /extraible2/Series
+          sudo touch /extraible2/Series/existing-video.mp4
+          sudo chmod 444 /extraible2/Series/existing-video.mp4
+          original_media_owner=$(stat -c '%u:%g:%a' /extraible2/Series/existing-video.mp4)
+          trap 'docker compose logs; docker compose down' EXIT
+          docker compose up -d
           for attempt in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:18787/health >/dev/null; then break; fi
             sleep 2
@@ -72,3 +76,7 @@ jobs:
           test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18787/api/status)" = 401
           curl -fsS -H "Authorization: Bearer $YML_TOKEN" http://127.0.0.1:18787/api/status \
             | python3 -c "import json,sys; data=json.load(sys.stdin); assert data['settings']['configured'] is False; print('Contenedor OK: autenticación y configuración inicial verificadas.')"
+          test "$(sudo stat -c '%u:%g' /instalaciones/yo-me-llamo/data/.instance.lock)" = "12001:12001"
+          test "$(stat -c '%u:%g:%a' /extraible2/Series/existing-video.mp4)" = "$original_media_owner"
+          test "$(docker inspect --format '{{.Config.User}}' yo-me-llamo)" = "12001:12001"
+          echo 'Permisos preparados automáticamente; biblioteca existente sin cambios.'

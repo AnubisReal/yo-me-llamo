@@ -21,15 +21,11 @@ Construye para `linux/amd64` y `linux/arm64`. Utiliza `GITHUB_TOKEN` de Actions;
 
 ## 2. Preparar las carpetas del servidor
 
-Comprueba que `/extraible2` es el disco de destino y está montado. Ejecuta en Ubuntu:
+Comprueba que `/extraible2` está montado. El stack incluye un servicio de inicialización que crea `/instalaciones/yo-me-llamo/data` y `tmp` y asigna los permisos de `PUID`/`PGID` (1000 por defecto). También corrige archivos antiguos como `.instance.lock` creados por root. No necesitas ejecutar `chown` manualmente en las carpetas del proyecto.
 
-```sh
-sudo install -d -o 1000 -g 1000 /instalaciones/yo-me-llamo/data
-sudo install -d -o 1000 -g 1000 /instalaciones/yo-me-llamo/tmp
-sudo install -d -o 1000 -g 1000 "/extraible2/Series/yo me llamo"
-```
+El inicializador termina antes de que arranque la aplicación. Solo tiene montada la carpeta del proyecto; no tiene acceso a los capítulos de `/extraible2`. La aplicación continúa ejecutándose con `PUID`/`PGID`, sin root.
 
-Si tu biblioteca usa otro usuario/grupo, sustituye `1000` por sus UID/GID y utiliza esos mismos valores en `PUID` y `PGID` del stack. No es necesario cambiar los propietarios de los vídeos existentes.
+Usa en `PUID` y `PGID` el usuario/grupo que ya tiene escritura en tu carpeta de series. El inicializador no cambia permisos ni propietarios de la biblioteca existente. En unidades NFS con root_squash u otros montajes que prohíban cambiar propietarios, los permisos deben configurarse en el servidor que exporta el volumen.
 
 La instalación queda en la imagen Docker. Solo la base de datos y los temporales se guardan en `/instalaciones/yo-me-llamo`; los vídeos terminados van al disco de series.
 
@@ -119,3 +115,5 @@ Si defines `YML_PROXY`, se fuerza esa salida para consultas y vídeos y no se ca
 ## Redes Docker agotadas
 
 El stack utiliza `network_mode: bridge`, la red integrada de Docker. No crea una red `yomellamo_default` ni consume otro rango de subredes. Si Portainer muestra `all predefined address pools have been fully subnetted`, actualiza el YAML con la versión actual del repositorio y vuelve a desplegar. Se mantiene la publicación del puerto 8787. No hace falta borrar redes ni reiniciar Docker.
+
+Si tenías el error `Permission denied: /data/.instance.lock`, reemplaza el stack por la versión actual y activa **Re-pull image** al actualizarlo. El servicio `preparar-carpetas` debe terminar con código 0; después arranca `yo-me-llamo`.

@@ -1,7 +1,30 @@
 services:
+  preparar-carpetas:
+    image: ${IMAGE:-ghcr.io/anubisreal/yo-me-llamo:latest}
+    user: "0:0"
+    restart: "no"
+    network_mode: none
+    entrypoint: ["python", "/app/prepare_storage.py"]
+    environment:
+      PUID: "${PUID:-1000}"
+      PGID: "${PGID:-1000}"
+    volumes:
+      - /instalaciones/yo-me-llamo:/project
+    read_only: true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+    security_opt:
+      - no-new-privileges:true
   yo-me-llamo:
     image: ${IMAGE:-ghcr.io/anubisreal/yo-me-llamo:latest}
     container_name: yo-me-llamo
+    depends_on:
+      preparar-carpetas:
+        condition: service_completed_successfully
     restart: unless-stopped
     network_mode: bridge
     init: true

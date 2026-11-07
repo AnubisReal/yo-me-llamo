@@ -1,6 +1,7 @@
 **
 !app.py
 !library.py
+!prepare_storage.py
 !config.json
 !static/
 !static/**

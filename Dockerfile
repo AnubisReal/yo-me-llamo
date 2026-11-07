@@ -7,7 +7,7 @@ ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 \
     YML_HOST=0.0.0.0 YML_PORT=8787 \
     YML_DATA_DIR=/data YML_TEMP_DIR=/work \
     YML_LIBRARY_ROOT=/extraible2/Series YML_OUTPUT_DIR="/extraible2/Series/yo me llamo"
-COPY app.py library.py config.json ./
+COPY app.py library.py prepare_storage.py config.json ./
 COPY static/ ./static/
 RUN mkdir -p /data /work /extraible2/Series && chown -R 1000:1000 /app /data /work /extraible2
 USER 1000:1000
