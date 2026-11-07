@@ -1,0 +1,40 @@
+services:
+  yo-me-llamo:
+    image: ${IMAGE:-ghcr.io/anubisreal/yo-me-llamo:latest}
+    container_name: yo-me-llamo
+    restart: unless-stopped
+    init: true
+    user: "${PUID:-1000}:${PGID:-1000}"
+    ports:
+      - "${PORT:-8787}:8787"
+    environment:
+      YML_TOKEN: ${YML_TOKEN:?Define un token de acceso en las variables del stack}
+      YML_HOST: 0.0.0.0
+      YML_DATA_DIR: /data
+      YML_TEMP_DIR: /work
+      YML_OUTPUT_DIR: /extraible2/Series/yo me llamo
+      YML_LIBRARY_ROOT: /extraible2/Series
+      YML_AUTO_DOWNLOAD: "true"
+      YML_INTERVAL_MINUTES: "${CHECK_MINUTES:-15}"
+      YML_MIN_EPISODE: "${MIN_EPISODE:-75}"
+      YML_SEASON: "${SEASON:-2026}"
+      YML_MAX_HEIGHT: "720"
+      YML_PROXY: "${YML_PROXY:-}"
+      YML_PROXY_FALLBACK: "${YML_PROXY_FALLBACK-http://8.242.147.166:3128}"
+    volumes:
+      - /instalaciones/yo-me-llamo/data:/data
+      - /instalaciones/yo-me-llamo/tmp:/work
+      - /extraible2/Series:/extraible2/Series
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 45s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"

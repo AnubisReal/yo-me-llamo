@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Yo me llamo</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+<main>
+  <header>
+    <div class="heading"><h1>Yo me llamo</h1><span id="season"></span></div>
+    <div class="header-actions"><button id="settings-open">Ajustes</button><button id="scan">Revisar ahora</button></div>
+  </header>
+  <div class="summary"><span><strong id="total">—</strong> capítulos</span><span><strong id="saved">—</strong> guardados</span><span id="quality">720p</span><span id="schedule">Automático</span></div>
+  <div id="notice" role="status" hidden></div>
+  <form id="auth" hidden><label for="token">Token de acceso</label><div class="auth-input"><input id="token" type="password" autocomplete="off" required><button>Entrar</button></div></form>
+  <div class="toolbar"><span id="checked">Conectando…</span><label for="filter" class="sr-only">Filtrar capítulos</label><select id="filter"><option value="all">Todos los capítulos</option><option value="active">En curso</option><option value="available">Pendientes</option><option value="downloaded">Guardados</option><option value="error">Errores</option></select></div>
+  <div class="table-wrap"><table><thead><tr><th class="number">Cap.</th><th>Capítulo</th><th class="date">Fecha</th><th>Estado</th><th class="action"><span class="sr-only">Acciones</span></th></tr></thead><tbody id="episodes"></tbody></table></div>
+  <footer><span>Destino</span><code id="folder">—</code></footer>
+</main>
+<dialog id="settings-dialog" aria-labelledby="settings-title">
+  <div class="dialog-header"><h2 id="settings-title">Ajustes</h2><button id="settings-close" type="button">Cerrar</button></div>
+  <form id="settings-form">
+    <label for="destination">Carpeta de Yo me llamo</label>
+    <div class="path-input"><input id="destination" type="text" required><button id="browse" type="button">Explorar</button></div>
+    <div id="directory-browser" hidden><div class="directory-head"><button id="directory-up" type="button">Subir</button><code id="directory-path"></code></div><div id="directory-folders"></div><button id="directory-choose" type="button">Usar esta carpeta</button></div>
+    <button id="inspect-library" type="button">Buscar capítulos existentes</button>
+    <div id="library-preview" role="status"></div>
+    <div class="settings-grid"><div><label for="start-episode">Continuar desde el capítulo</label><input id="start-episode" type="number" min="1" max="10000" required></div><div><label for="interval">Revisar cada (minutos)</label><input id="interval" type="number" min="1" max="1440" required></div></div>
+    <label class="checkbox"><input id="automatic" type="checkbox"> Descargar capítulos nuevos automáticamente</label>
+    <p id="settings-error" role="alert" hidden></p>
+    <div class="settings-bottom"><button id="settings-save" type="submit" disabled>Guardar ajustes</button></div>
+  </form>
+</dialog>
+</body>
+</html>

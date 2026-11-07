@@ -1,0 +1,19 @@
+{
+  "host": "127.0.0.1",
+  "port": 8787,
+  "season": 2026,
+  "output_dir": "./downloads",
+  "data_dir": "./data",
+  "max_height": 720,
+  "check_interval_minutes": 15,
+  "max_pages": 20,
+  "auto_download": true,
+  "min_episode": 75,
+  "max_episode_pages": 150,
+  "full_scan_interval_hours": 24,
+  "max_attempts": 3,
+  "retry_minutes": 15,
+  "temp_dir": "./data/tmp",
+  "require_setup": true,
+  "library_root": "./downloads"
+}

@@ -1,0 +1,19 @@
+{
+  "host": "127.0.0.1",
+  "port": 8787,
+  "season": 2026,
+  "output_dir": "/extraible2/Series/yo me llamo",
+  "data_dir": "/instalaciones/yo-me-llamo/data",
+  "max_height": 720,
+  "check_interval_minutes": 15,
+  "max_pages": 20,
+  "auto_download": true,
+  "min_episode": 75,
+  "max_episode_pages": 150,
+  "full_scan_interval_hours": 24,
+  "max_attempts": 3,
+  "retry_minutes": 15,
+  "temp_dir": "/instalaciones/yo-me-llamo/tmp",
+  "require_setup": true,
+  "library_root": "/extraible2/Series"
+}

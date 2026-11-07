@@ -1,0 +1,2 @@
+# Solo necesario si no tienes FFmpeg instalado en el sistema.
+imageio-ffmpeg==0.8.1

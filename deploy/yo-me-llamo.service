@@ -1,0 +1,23 @@
+[Unit]
+Description=Biblioteca Yo me llamo
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=yomellamo
+Group=yomellamo
+WorkingDirectory=/opt/yo-me-llamo
+ExecStart=/usr/bin/python3 /opt/yo-me-llamo/app.py --config /opt/yo-me-llamo/deploy/config.ubuntu.json
+EnvironmentFile=-/etc/yo-me-llamo.env
+Restart=on-failure
+RestartSec=10
+UMask=0027
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/instalaciones/yo-me-llamo "/extraible2/Series/yo me llamo"
+
+[Install]
+WantedBy=multi-user.target
